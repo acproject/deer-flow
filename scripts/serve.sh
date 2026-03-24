@@ -26,6 +26,12 @@ else
     FRONTEND_CMD="env BETTER_AUTH_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(16))') pnpm run preview"
 fi
 
+if command -v nginx >/dev/null 2>&1; then
+    USE_NGINX=true
+else
+    USE_NGINX=false
+fi
+
 # ── Stop existing services ────────────────────────────────────────────────────
 
 echo "Stopping existing services if any..."
@@ -37,7 +43,7 @@ nginx -c "$REPO_ROOT/docker/nginx/nginx.local.conf" -p "$REPO_ROOT" -s quit 2>/d
 sleep 1
 pkill -9 nginx 2>/dev/null || true
 killall -9 nginx 2>/dev/null || true
-./scripts/cleanup-containers.sh deer-flow-sandbox 2>/dev/null || true
+bash ./scripts/cleanup-containers.sh deer-flow-sandbox 2>/dev/null || true
 sleep 1
 
 # ── Banner ────────────────────────────────────────────────────────────────────
@@ -80,7 +86,7 @@ fi
 
 # ── Auto-upgrade config ──────────────────────────────────────────────────
 
-"$REPO_ROOT/scripts/config-upgrade.sh"
+bash "$REPO_ROOT/scripts/config-upgrade.sh"
 
 # ── Cleanup trap ─────────────────────────────────────────────────────────────
 
@@ -103,7 +109,7 @@ cleanup() {
     pkill -9 nginx 2>/dev/null || true
     killall -9 nginx 2>/dev/null || true
     echo "Cleaning up sandbox containers..."
-    ./scripts/cleanup-containers.sh deer-flow-sandbox 2>/dev/null || true
+    bash ./scripts/cleanup-containers.sh deer-flow-sandbox 2>/dev/null || true
     echo "✓ All services stopped"
     exit 0
 }
@@ -123,7 +129,7 @@ fi
 
 echo "Starting LangGraph server..."
 (cd backend && NO_COLOR=1 uv run langgraph dev --no-browser --allow-blocking $LANGGRAPH_EXTRA_FLAGS > ../logs/langgraph.log 2>&1) &
-./scripts/wait-for-port.sh 2024 60 "LangGraph" || {
+bash ./scripts/wait-for-port.sh 2024 60 "LangGraph" || {
     echo "  See logs/langgraph.log for details"
     tail -20 logs/langgraph.log
     if grep -qE "config_version|outdated|Environment variable .* not found|KeyError|ValidationError|config\.yaml" logs/langgraph.log 2>/dev/null; then
@@ -136,7 +142,7 @@ echo "✓ LangGraph server started on localhost:2024"
 
 echo "Starting Gateway API..."
 (cd backend && PYTHONPATH=. uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 $GATEWAY_EXTRA_FLAGS > ../logs/gateway.log 2>&1) &
-./scripts/wait-for-port.sh 8001 30 "Gateway API" || {
+bash ./scripts/wait-for-port.sh 8001 30 "Gateway API" || {
     echo "✗ Gateway API failed to start. Last log output:"
     tail -60 logs/gateway.log
     echo ""
@@ -149,8 +155,12 @@ echo "Starting Gateway API..."
 echo "✓ Gateway API started on localhost:8001"
 
 echo "Starting Frontend..."
-(cd frontend && $FRONTEND_CMD > ../logs/frontend.log 2>&1) &
-./scripts/wait-for-port.sh 3000 120 "Frontend" || {
+if $USE_NGINX; then
+    (cd frontend && $FRONTEND_CMD > ../logs/frontend.log 2>&1) &
+else
+    (cd frontend && env NEXT_PUBLIC_BACKEND_BASE_URL="http://localhost:8001" NEXT_PUBLIC_LANGGRAPH_BASE_URL="http://localhost:2024" $FRONTEND_CMD > ../logs/frontend.log 2>&1) &
+fi
+bash ./scripts/wait-for-port.sh 3000 120 "Frontend" || {
     echo "  See logs/frontend.log for details"
     tail -20 logs/frontend.log
     cleanup
@@ -158,14 +168,27 @@ echo "Starting Frontend..."
 echo "✓ Frontend started on localhost:3000"
 
 echo "Starting Nginx reverse proxy..."
-nginx -g 'daemon off;' -c "$REPO_ROOT/docker/nginx/nginx.local.conf" -p "$REPO_ROOT" > logs/nginx.log 2>&1 &
-NGINX_PID=$!
-./scripts/wait-for-port.sh 2026 10 "Nginx" || {
-    echo "  See logs/nginx.log for details"
-    tail -10 logs/nginx.log
-    cleanup
-}
-echo "✓ Nginx started on localhost:2026"
+APP_URL="http://localhost:2026"
+API_URL="http://localhost:2026/api/*"
+LANGGRAPH_URL="http://localhost:2026/api/langgraph/*"
+NGINX_LOG_LINE="     - Nginx:     logs/nginx.log"
+
+if command -v nginx >/dev/null 2>&1; then
+    nginx -g 'daemon off;' -c "$REPO_ROOT/docker/nginx/nginx.local.conf" -p "$REPO_ROOT" > logs/nginx.log 2>&1 &
+    NGINX_PID=$!
+    bash ./scripts/wait-for-port.sh 2026 10 "Nginx" || {
+        echo "  See logs/nginx.log for details"
+        tail -10 logs/nginx.log
+        cleanup
+    }
+    echo "✓ Nginx started on localhost:2026"
+else
+    echo "⚠ nginx not found; skipping reverse proxy."
+    APP_URL="http://localhost:3000"
+    API_URL="http://localhost:8001"
+    LANGGRAPH_URL="http://localhost:2024"
+    NGINX_LOG_LINE=""
+fi
 
 # ── Ready ─────────────────────────────────────────────────────────────────────
 
@@ -178,15 +201,15 @@ else
 fi
 echo "=========================================="
 echo ""
-echo "  🌐 Application: http://localhost:2026"
-echo "  📡 API Gateway: http://localhost:2026/api/*"
-echo "  🤖 LangGraph:   http://localhost:2026/api/langgraph/*"
+echo "  🌐 Application: $APP_URL"
+echo "  📡 API Gateway: $API_URL"
+echo "  🤖 LangGraph:   $LANGGRAPH_URL"
 echo ""
 echo "  📋 Logs:"
 echo "     - LangGraph: logs/langgraph.log"
 echo "     - Gateway:   logs/gateway.log"
 echo "     - Frontend:  logs/frontend.log"
-echo "     - Nginx:     logs/nginx.log"
+[ -n "$NGINX_LOG_LINE" ] && echo "$NGINX_LOG_LINE"
 echo ""
 echo "Press Ctrl+C to stop all services"
 

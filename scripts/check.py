@@ -35,6 +35,7 @@ def main() -> int:
     print()
 
     failed = False
+    warnings: list[str] = []
 
     print("Checking Node.js...")
     node_path = shutil.which("node")
@@ -100,19 +101,28 @@ def main() -> int:
         else:
             print("  ✓ nginx (version unknown)")
     else:
-        print("  ✗ nginx not found")
+        print("  ⚠ nginx not found (optional)")
+        print("    Needed only for local reverse-proxy: make dev / make start")
         print("    macOS:   brew install nginx")
         print("    Ubuntu:  sudo apt install nginx")
         print("    Windows: use WSL for local mode or use Docker mode")
         print("    Or visit: https://nginx.org/en/download.html")
-        failed = True
+        warnings.append("nginx not found")
 
     print()
     if not failed:
         print("==========================================")
-        print("  ✓ All dependencies are installed!")
+        if warnings:
+            print("  ✓ Core dependencies are installed (optional tools missing)")
+        else:
+            print("  ✓ All dependencies are installed!")
         print("==========================================")
         print()
+        if warnings:
+            print("Optional tools missing:")
+            for item in warnings:
+                print(f"  - {item}")
+            print()
         print("You can now run:")
         print("  make install  - Install project dependencies")
         print("  make config   - Generate local config files")
